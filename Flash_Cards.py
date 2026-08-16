@@ -5,6 +5,9 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 
+DEFAULT_CHALLENGE_TARGET = 20
+
+
 def next_card() -> tuple[int, int]:
     return random.randint(1, 10), random.randint(1, 10)
 
@@ -34,6 +37,12 @@ def initialize_state() -> None:
         st.session_state.game_elapsed = None
     if "game_results" not in st.session_state:
         st.session_state.game_results = []
+    if "show_balloons" not in st.session_state:
+        st.session_state.show_balloons = False
+    if "selected_challenge_target" not in st.session_state:
+        st.session_state.selected_challenge_target = DEFAULT_CHALLENGE_TARGET
+    if "game_target" not in st.session_state:
+        st.session_state.game_target = DEFAULT_CHALLENGE_TARGET
 
 
 def reset_session() -> None:
@@ -49,6 +58,8 @@ def reset_session() -> None:
     st.session_state.game_start_time = None
     st.session_state.game_elapsed = None
     st.session_state.game_results = []
+    st.session_state.show_balloons = False
+    st.session_state.game_target = DEFAULT_CHALLENGE_TARGET
 
 
 def start_game() -> None:
@@ -59,6 +70,8 @@ def start_game() -> None:
     st.session_state.game_attempts = 0
     st.session_state.game_start_time = time.time()
     st.session_state.game_elapsed = None
+    st.session_state.show_balloons = False
+    st.session_state.game_target = st.session_state.selected_challenge_target
 
 
 def format_elapsed(seconds: float) -> str:
@@ -69,7 +82,7 @@ def format_elapsed(seconds: float) -> str:
     return f"{minutes:02d}:{secs:02d}.{hundredths:02d}"
 
 
-def submit_answer(student_answer: int) -> bool:
+def submit_answer(student_answer: int, *, advance_card: bool = True) -> bool:
     first, second = st.session_state.current_card
     correct_answer = first * second
     is_correct = student_answer == correct_answer
@@ -98,7 +111,8 @@ def submit_answer(student_answer: int) -> bool:
         *st.session_state.history,
     ][:8]
 
-    st.session_state.current_card = next_card()
+    if advance_card:
+        st.session_state.current_card = next_card()
     return is_correct
 
 
@@ -114,7 +128,15 @@ st.markdown(
         font-size: 2rem;
         padding: 0.9rem 1rem;
     }
+    div[data-testid="stNumberInput"] input {
+        font-size: 2rem;
+        padding: 0.9rem 1rem;
+    }
     div[data-testid="stRadio"] > label p {
+        font-size: 1.35rem !important;
+        font-weight: 800 !important;
+    }
+    div[data-testid="stNumberInput"] > label p {
         font-size: 1.35rem !important;
         font-weight: 800 !important;
     }
@@ -133,6 +155,16 @@ st.markdown(
         font-size: 1.35rem !important;
         font-weight: 800 !important;
     }
+    div[data-testid="stButton"] > button[kind="primary"] {
+        background: #1f8f4d !important;
+        border-color: #1f8f4d !important;
+        color: white !important;
+    }
+    div[data-testid="stButton"] > button[kind="primary"]:hover {
+        background: #18713d !important;
+        border-color: #18713d !important;
+        color: white !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -140,25 +172,49 @@ st.markdown(
 
 initialize_state()
 
+if st.session_state.show_balloons:
+    st.balloons()
+    st.session_state.show_balloons = False
+
 st.title("10 x 10 Multiplication Flash Cards")
 st.caption("Practice multiplication facts from 1 x 1 through 10 x 10.")
 mode = st.radio(
     "Mode",
-    ["Practice", "20 Correct Challenge"],
+    ["Practice", "Time Challenge"],
     horizontal=True,
     key="mode_select",
 )
 
 left_col, right_col = st.columns([2, 1])
 
+challenge_finished = (
+    mode == "Time Challenge"
+    and not st.session_state.game_active
+    and st.session_state.game_elapsed is not None
+    and st.session_state.game_correct >= st.session_state.game_target
+)
+
 with left_col:
-    if mode == "20 Correct Challenge":
-        if st.button("Start 20-Correct Game", use_container_width=True):
+    if mode == "Time Challenge":
+        st.number_input(
+            "Correct answers needed",
+            min_value=1,
+            max_value=100,
+            step=1,
+            value=DEFAULT_CHALLENGE_TARGET,
+            key="selected_challenge_target",
+            disabled=st.session_state.game_active,
+        )
+
+        if st.button(
+            "Start Time Challenge",
+            use_container_width=True,
+            type="primary",
+        ):
             start_game()
             st.rerun()
 
         with st.container(border=True):
-            st.markdown("**Stopwatch**")
             if st.session_state.game_active and st.session_state.game_start_time is not None:
                 start_ms = int(st.session_state.game_start_time * 1000)
                 components.html(
@@ -193,61 +249,76 @@ with left_col:
             else:
                 st.metric("Time", "00:00.00")
 
-    first, second = st.session_state.current_card
-    st.markdown(
-        f"<div style='font-size: 4rem; font-weight: 700; text-align: center; padding: 0.2rem 0 0.8rem 0;'>{first} x {second} = ?</div>",
-        unsafe_allow_html=True,
-    )
-
-    with st.form("flash_card_form", clear_on_submit=True):
-        st.subheader("Answer")
-        student_answer = st.text_input(
-            "Answer",
-            value="",
-            placeholder="Type a number",
-            label_visibility="collapsed",
+    if not challenge_finished:
+        first, second = st.session_state.current_card
+        st.markdown(
+            f"<div style='font-size: 4rem; font-weight: 700; text-align: center; padding: 0.2rem 0 0.8rem 0;'>{first} x {second} = ?</div>",
+            unsafe_allow_html=True,
         )
-        submitted = st.form_submit_button("Check answer")
-        if submitted:
-            if mode == "20 Correct Challenge" and not st.session_state.game_active:
-                st.session_state.feedback = "Start the game first."
-                st.rerun()
 
-            cleaned_answer = student_answer.strip()
-            if cleaned_answer.isdigit() and 0 <= int(cleaned_answer) <= 100:
-                is_correct = submit_answer(int(cleaned_answer))
+        with st.form("flash_card_form", clear_on_submit=True):
+            st.subheader("Answer")
+            student_answer = st.text_input(
+                "Answer",
+                value="",
+                placeholder="Type a number",
+                label_visibility="collapsed",
+            )
+            submitted = st.form_submit_button("Check answer")
+            if submitted:
+                if mode == "Time Challenge" and not st.session_state.game_active:
+                    st.session_state.feedback = "Start the game first."
+                    st.rerun()
 
-                if mode == "20 Correct Challenge" and st.session_state.game_active:
-                    st.session_state.game_attempts += 1
-                    if is_correct:
-                        st.session_state.game_correct += 1
+                cleaned_answer = student_answer.strip()
+                if cleaned_answer.isdigit() and 0 <= int(cleaned_answer) <= 100:
+                    answer_value = int(cleaned_answer)
+                    final_challenge_answer = (
+                        mode == "Time Challenge"
+                        and st.session_state.game_active
+                        and st.session_state.game_correct
+                        == st.session_state.game_target - 1
+                        and answer_value == first * second
+                    )
+                    is_correct = submit_answer(
+                        answer_value,
+                        advance_card=not final_challenge_answer,
+                    )
 
-                    if st.session_state.game_correct >= 20:
-                        st.session_state.game_active = False
-                        if st.session_state.game_start_time is not None:
-                            st.session_state.game_elapsed = (
-                                time.time() - st.session_state.game_start_time
+                    if mode == "Time Challenge" and st.session_state.game_active:
+                        st.session_state.game_attempts += 1
+                        if is_correct:
+                            st.session_state.game_correct += 1
+
+                        if st.session_state.game_correct >= st.session_state.game_target:
+                            st.session_state.game_active = False
+                            if st.session_state.game_start_time is not None:
+                                st.session_state.game_elapsed = (
+                                    time.time() - st.session_state.game_start_time
+                                )
+                            final_time = format_elapsed(st.session_state.game_elapsed or 0)
+                            final_attempts = st.session_state.game_attempts
+                            st.session_state.game_results = [
+                                {
+                                    "target": st.session_state.game_target,
+                                    "time": final_time,
+                                    "questions_asked": final_attempts,
+                                },
+                                *st.session_state.game_results,
+                            ][:10]
+                            st.session_state.feedback = (
+                                "Challenge complete! "
+                                f"{st.session_state.game_target} correct in {final_time}. "
+                                f"Questions asked: {final_attempts}."
                             )
-                        final_time = format_elapsed(st.session_state.game_elapsed or 0)
-                        final_attempts = st.session_state.game_attempts
-                        st.session_state.game_results = [
-                            {
-                                "time": final_time,
-                                "questions_asked": final_attempts,
-                            },
-                            *st.session_state.game_results,
-                        ][:10]
-                        st.session_state.feedback = (
-                            "Challenge complete! "
-                            f"Time: {final_time}. Questions asked: {final_attempts}."
-                        )
+                            st.session_state.show_balloons = True
 
-                st.rerun()
-            else:
-                st.session_state.feedback = "Enter a whole number from 0 to 100."
+                    st.rerun()
+                else:
+                    st.session_state.feedback = "Enter a whole number from 0 to 100."
 
     if st.session_state.feedback:
-        if st.session_state.feedback.startswith("Correct"):
+        if st.session_state.feedback.startswith(("Correct", "Challenge complete!")):
             st.success(st.session_state.feedback)
         else:
             st.warning(st.session_state.feedback)
@@ -264,8 +335,11 @@ with right_col:
     st.metric("Accuracy", f"{accuracy}%")
     st.metric("Streak", st.session_state.streak)
 
-    if mode == "20 Correct Challenge":
-        st.metric("Number correct", st.session_state.game_correct)
+    if mode == "Time Challenge":
+        st.metric(
+            "Number correct",
+            f"{st.session_state.game_correct}/{st.session_state.game_target}",
+        )
         st.metric("Question Attempts", st.session_state.game_attempts)
 
         if st.session_state.game_elapsed is not None:
@@ -284,6 +358,6 @@ if st.session_state.history:
 else:
     st.write("Answer a few cards to see recent results here.")
 
-if mode == "20 Correct Challenge" and st.session_state.game_results:
+if mode == "Time Challenge" and st.session_state.game_results:
     st.subheader("Challenge results")
     st.table(st.session_state.game_results)
