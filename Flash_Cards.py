@@ -1,11 +1,14 @@
 import random
+import json
 import time
+from pathlib import Path
 
 import streamlit as st
 import streamlit.components.v1 as components
 
 
 DEFAULT_CHALLENGE_TARGET = 20
+LEADERBOARD_FILE = Path(__file__).with_name("leaderboard.json")
 
 
 def next_card() -> tuple[int, int]:
@@ -39,10 +42,16 @@ def initialize_state() -> None:
         st.session_state.game_results = []
     if "show_balloons" not in st.session_state:
         st.session_state.show_balloons = False
+    if "challenge_player_name" not in st.session_state:
+        st.session_state.challenge_player_name = ""
+    if "game_player_name" not in st.session_state:
+        st.session_state.game_player_name = ""
     if "selected_challenge_target" not in st.session_state:
         st.session_state.selected_challenge_target = DEFAULT_CHALLENGE_TARGET
     if "game_target" not in st.session_state:
         st.session_state.game_target = DEFAULT_CHALLENGE_TARGET
+    if "challenge_leaderboards" not in st.session_state:
+        st.session_state.challenge_leaderboards = load_leaderboards()
 
 
 def reset_session() -> None:
@@ -59,7 +68,56 @@ def reset_session() -> None:
     st.session_state.game_elapsed = None
     st.session_state.game_results = []
     st.session_state.show_balloons = False
-    st.session_state.game_target = DEFAULT_CHALLENGE_TARGET
+    st.session_state.game_player_name = ""
+
+
+def load_leaderboards() -> dict[str, list[dict[str, int | str | float]]]:
+    if not LEADERBOARD_FILE.exists():
+        return {}
+
+    try:
+        with LEADERBOARD_FILE.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+    if not isinstance(data, dict):
+        return {}
+
+    valid_leaderboards: dict[str, list[dict[str, int | str | float]]] = {}
+    for target, entries in data.items():
+        if not isinstance(target, str) or not isinstance(entries, list):
+            continue
+
+        cleaned_entries: list[dict[str, int | str | float]] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            if {
+                "name",
+                "elapsed_seconds",
+                "time",
+                "questions_asked",
+            }.issubset(entry.keys()):
+                cleaned_entries.append(entry)
+
+        valid_leaderboards[target] = cleaned_entries[:5]
+
+    return valid_leaderboards
+
+
+def save_leaderboards() -> None:
+    try:
+        with LEADERBOARD_FILE.open("w", encoding="utf-8") as handle:
+            json.dump(st.session_state.challenge_leaderboards, handle, indent=2)
+    except OSError:
+        pass
+
+
+def current_challenge_target() -> int:
+    if st.session_state.game_active:
+        return st.session_state.game_target
+    return st.session_state.selected_challenge_target
 
 
 def start_game() -> None:
@@ -72,6 +130,7 @@ def start_game() -> None:
     st.session_state.game_elapsed = None
     st.session_state.show_balloons = False
     st.session_state.game_target = st.session_state.selected_challenge_target
+    st.session_state.game_player_name = st.session_state.challenge_player_name.strip()
 
 
 def format_elapsed(seconds: float) -> str:
@@ -80,6 +139,48 @@ def format_elapsed(seconds: float) -> str:
     secs = (total_centiseconds % 6000) // 100
     hundredths = total_centiseconds % 100
     return f"{minutes:02d}:{secs:02d}.{hundredths:02d}"
+
+
+def record_challenge_result(
+    target: int,
+    player_name: str,
+    elapsed_seconds: float,
+    questions_asked: int,
+) -> None:
+    leaderboard = st.session_state.challenge_leaderboards.get(str(target), [])
+    display_name = player_name.strip() or "Anonymous"
+    leaderboard.append(
+        {
+            "name": display_name,
+            "elapsed_seconds": elapsed_seconds,
+            "time": format_elapsed(elapsed_seconds),
+            "questions_asked": questions_asked,
+        }
+    )
+    leaderboard.sort(
+        key=lambda entry: (
+            entry["elapsed_seconds"],
+            entry["questions_asked"],
+            entry["name"].lower(),
+        )
+    )
+    st.session_state.challenge_leaderboards[str(target)] = leaderboard[:5]
+    save_leaderboards()
+
+
+def leaderboard_rows(target: int) -> list[dict[str, str | int]]:
+    leaderboard = st.session_state.challenge_leaderboards.get(str(target), [])
+    rows: list[dict[str, str | int]] = []
+    for index, entry in enumerate(leaderboard, start=1):
+        rows.append(
+            {
+                "Rank": index,
+                "Name": entry["name"],
+                "Time": entry["time"],
+                "Questions Asked": entry["questions_asked"],
+            }
+        )
+    return rows
 
 
 def submit_answer(student_answer: int, *, advance_card: bool = True) -> bool:
@@ -137,6 +238,10 @@ st.markdown(
         font-weight: 800 !important;
     }
     div[data-testid="stNumberInput"] > label p {
+        font-size: 1.35rem !important;
+        font-weight: 800 !important;
+    }
+    div[data-testid="stTextInput"] > label p {
         font-size: 1.35rem !important;
         font-weight: 800 !important;
     }
@@ -203,6 +308,13 @@ with left_col:
             step=1,
             value=DEFAULT_CHALLENGE_TARGET,
             key="selected_challenge_target",
+            disabled=st.session_state.game_active,
+        )
+
+        st.text_input(
+            "Player name (optional)",
+            placeholder="Enter your name",
+            key="challenge_player_name",
             disabled=st.session_state.game_active,
         )
 
@@ -298,14 +410,12 @@ with left_col:
                                 )
                             final_time = format_elapsed(st.session_state.game_elapsed or 0)
                             final_attempts = st.session_state.game_attempts
-                            st.session_state.game_results = [
-                                {
-                                    "target": st.session_state.game_target,
-                                    "time": final_time,
-                                    "questions_asked": final_attempts,
-                                },
-                                *st.session_state.game_results,
-                            ][:10]
+                            record_challenge_result(
+                                st.session_state.game_target,
+                                st.session_state.game_player_name,
+                                st.session_state.game_elapsed or 0,
+                                final_attempts,
+                            )
                             st.session_state.feedback = (
                                 "Challenge complete! "
                                 f"{st.session_state.game_target} correct in {final_time}. "
@@ -336,9 +446,10 @@ with right_col:
     st.metric("Streak", st.session_state.streak)
 
     if mode == "Time Challenge":
+        active_target = current_challenge_target()
         st.metric(
             "Number correct",
-            f"{st.session_state.game_correct}/{st.session_state.game_target}",
+            f"{st.session_state.game_correct}/{active_target}",
         )
         st.metric("Question Attempts", st.session_state.game_attempts)
 
@@ -351,13 +462,20 @@ with right_col:
         st.rerun()
 
 st.divider()
+if mode == "Time Challenge":
+    st.subheader("Leaderboard")
+
+    leaderboard = leaderboard_rows(current_challenge_target())
+    if leaderboard:
+        st.table(leaderboard)
+    else:
+        st.caption("Top 5 fastest times for this target will appear here.")
+
+    st.divider()
+
 st.subheader("Recent cards")
 
 if st.session_state.history:
     st.table(st.session_state.history)
 else:
     st.write("Answer a few cards to see recent results here.")
-
-if mode == "Time Challenge" and st.session_state.game_results:
-    st.subheader("Challenge results")
-    st.table(st.session_state.game_results)
