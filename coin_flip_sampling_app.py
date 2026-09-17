@@ -60,15 +60,8 @@ def reset_simulation() -> None:
 
 
 def generate_lln_trend(p_heads: float) -> np.ndarray:
-    chunks = [np.random.binomial(1, p_heads, size=5_000)]
-    heads = int(chunks[0].sum())
-    total = 5_000
-    while abs(heads / total - p_heads) > 0.01 + 1e-12:
-        extra = np.random.binomial(1, p_heads, size=50)
-        chunks.append(extra)
-        heads += int(extra.sum())
-        total += 50
-    return np.concatenate(chunks)
+    sample_sizes = np.arange(50, 10_001, 50)
+    return np.random.binomial(sample_sizes, p_heads) / sample_sizes
 
 
 def simulate_samples(num_samples: int, flips_per_sample: int, p_heads: float) -> None:
@@ -159,9 +152,9 @@ if lln_tab.open:
             show_growth = not show_growth
             st.session_state.lln_show_growth = show_growth
             if show_growth:
-                st.session_state.lln_trend_flips = generate_lln_trend(float(p_heads))
+                st.session_state.lln_trend_proportions = generate_lln_trend(float(p_heads))
                 st.session_state.lln_trend_probability = float(p_heads)
-                st.session_state.lln_trend_adaptive = True
+                st.session_state.lln_trend_independent = True
             st.rerun()
 
 if clt_tab.open:
@@ -318,29 +311,29 @@ with lln_tab:
     if show_growth:
         if (
             st.session_state.get("lln_trend_probability") != float(p_heads)
-            or not st.session_state.get("lln_trend_adaptive", False)
+            or not st.session_state.get("lln_trend_independent", False)
+            or len(st.session_state.get("lln_trend_proportions", [])) != 200
         ):
-            st.session_state.lln_trend_flips = generate_lln_trend(float(p_heads))
+            st.session_state.lln_trend_proportions = generate_lln_trend(float(p_heads))
             st.session_state.lln_trend_probability = float(p_heads)
-            st.session_state.lln_trend_adaptive = True
-        trend_size = len(st.session_state.lln_trend_flips)
+            st.session_state.lln_trend_independent = True
+        trend_size = 50 * len(st.session_state.lln_trend_proportions)
         flip_numbers = np.arange(50, trend_size + 1, 50)
-        running_proportions = np.cumsum(st.session_state.lln_trend_flips)[flip_numbers - 1] / flip_numbers
+        sample_proportions = st.session_state.lln_trend_proportions
         st.caption(
-            f"Cumulative proportion at 50-flip intervals through {trend_size:,} flips. "
-            "Starting at 5,000 flips, stop when the proportion is within 0.01 of the true probability. "
-            "Hide and show the trend to generate a fresh sequence."
+            f"Each point uses a fresh, independent sample of n flips, with n increasing by 50 through {trend_size:,}. "
+            "Hide and show the trend to generate a fresh set of samples."
         )
         fig, ax = plt.subplots(figsize=(10, 4))
         ax.plot(
             flip_numbers,
-            running_proportions,
+            sample_proportions,
             color="#2F6F73",
             linestyle="-",
             linewidth=1.5,
             marker="o",
             markersize=4,
-            label="Running sample proportion of heads",
+            label="Sample proportion of heads (fresh sample at each n)",
         )
         ax.axhline(
             float(p_heads),
@@ -350,15 +343,7 @@ with lln_tab:
             label=f"True proportion = {p_heads:.2f}",
         )
         ax.set_xlim(0, trend_size)
-        visible_proportions = running_proportions
-        lower, upper = float(p_heads) - 0.05, float(p_heads) + 0.05
-        if visible_proportions.min() < lower or visible_proportions.max() > upper:
-            lower = float(visible_proportions.min())
-            upper = float(visible_proportions.max())
-            if lower == upper:
-                lower -= 0.005
-                upper += 0.005
-        ax.set_ylim(lower, upper)
+        ax.set_ylim(float(p_heads) - 0.1, float(p_heads) + 0.1)
         ax.set_xlabel("Number of flips")
         ax.set_ylabel("Proportion of heads")
         ax.set_title("Sample Proportion as the Number of Flips Grows")
